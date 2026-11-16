@@ -1,0 +1,487 @@
+<title>Зручне введення POI через поле пошуку</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: map workspace on the left (search bar floats over it, POI drawer slides in from its right edge), test-data column on the right; stacks on narrow screens. Single dark look, as in the Copilot map UI. */
+:root{
+  color-scheme:dark;
+  --bg:#17191b; --panel:#222527; --panel-2:#2b2e31; --line:#3a3e42;
+  --fg:#e8eaec; --muted:#9aa1a8; --accent:#ea6b25; --accent-fg:#fff;
+  --ok:#33d093; --warn:#f2b63d; --bad:#ff5a5a; --hostile:#ff4060; --map:#1d2327; --grid:#2c353b;
+  --sans:"Inter",system-ui,"Segoe UI",sans-serif; --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 var(--sans);
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:16px;display:flex;flex-direction:column}
+h1{font-size:18px;font-weight:600;margin:0}
+.sub{color:var(--muted);font-size:10.5px;margin:2px 0 12px}
+.app{flex:1 1 0;min-height:440px;display:grid;grid-template-columns:minmax(0,2fr) minmax(360px,1fr);grid-template-rows:minmax(0,1fr);gap:16px;align-items:stretch}
+button,select,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer;border:1px solid var(--line);background:var(--panel-2);border-radius:6px;padding:6px 10px}
+button:hover{border-color:var(--muted)}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg);font-weight:600}
+button.ghost{background:transparent}
+button.on{border-color:var(--accent);color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+select,input[type=text],textarea{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;min-width:0}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* map */
+.map{position:relative;min-height:0;background:var(--map);border:1px solid var(--line);border-radius:8px;overflow:hidden;touch-action:none}
+.map canvas{position:absolute;inset:0;width:100%;height:100%}
+.map.tool{cursor:crosshair}
+#markers{position:absolute;inset:0;pointer-events:none}
+.mk{position:absolute;transform:translate(-50%,-50%);pointer-events:auto;cursor:pointer;text-align:center}
+.poi-ico{min-width:26px;height:22px;padding:0 4px;border:2px solid var(--hostile);background:#2a1418;color:#ffd5dc;border-radius:3px;font:500 10px/18px var(--mono);display:inline-block}
+.poi.sel .poi-ico{box-shadow:0 0 0 3px rgba(234,107,37,.6)}
+.poi-name{position:absolute;top:24px;left:50%;transform:translateX(-50%);white-space:nowrap;font-size:11px;text-transform:uppercase;text-shadow:0 0 3px #000,0 0 3px #000}
+.pv{width:24px;height:24px;border-radius:50%;border:2px dashed var(--accent);background:rgba(234,107,37,.18);color:var(--fg);font:500 11px/20px var(--mono)}
+.pv.off{opacity:.35}
+.pv.warn{border-color:var(--warn)}
+.pin{width:18px;height:18px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 0 rgba(234,107,37,.7);animation:pulse 1.6s infinite}
+@keyframes pulse{to{box-shadow:0 0 0 16px rgba(234,107,37,0)}}
+@media (prefers-reduced-motion:reduce){.pin{animation:none}}
+.tools{position:absolute;left:10px;top:10px;display:flex;flex-direction:column;gap:6px;z-index:3}
+.tools button{background:var(--panel)}
+.zoom{position:absolute;left:10px;bottom:10px;display:flex;gap:6px;z-index:3}
+.zoom button{background:var(--panel);width:32px;padding:4px 0}
+.readout{position:absolute;right:10px;bottom:10px;font-size:11px;color:var(--muted);background:rgba(23,25,27,.8);padding:2px 6px;border-radius:4px;z-index:2}
+
+/* search */
+.search{position:absolute;left:50%;top:10px;transform:translateX(-50%);width:min(640px,calc(100% - 40px));z-index:5;display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+@media (max-width:560px){.search{left:10px;right:10px;top:10px;width:auto;transform:none}.tools{flex-direction:row}}
+.sbox{display:flex;gap:4px;align-items:center;width:100%;height:36px;padding:0 4px 0 10px;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+.search.err .sbox{border-color:var(--bad)}
+.sbox textarea{flex:1;resize:none;border:0;background:transparent;font-family:var(--mono);font-size:13px;height:20px;line-height:20px;padding:0;white-space:pre;overflow:hidden}
+.sbox textarea:focus{outline:none}
+.sbox button{padding:2px 8px;border:0}
+.sbox{padding-left:0}
+.sbox .slabel{align-self:stretch;padding:0 12px;margin-right:6px;border-right:1px solid var(--line);border-radius:7px 0 0 7px;background:transparent;font-weight:500}
+.balloon{position:absolute;top:42px;left:0;z-index:8;max-width:100%;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+.balloon p{margin:0}.balloon ul{margin:6px 0;padding-left:18px}
+.drop{display:flex;flex-direction:column;gap:4px;margin-left:var(--lw,70px);width:calc(100% - var(--lw,70px));overflow:auto}
+.row{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-height:28px;padding:2px 2px 2px 8px;font-size:12px;background:rgba(34,37,39,.8);border:1px solid rgba(255,255,255,.14);border-radius:6px;backdrop-filter:blur(3px)}
+.row b{font-family:var(--mono);font-weight:500;color:var(--accent);min-width:16px;text-align:right}
+.row .nm{flex:1 1 80px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+.row .nm i{font-style:normal;color:var(--fg)}
+.row select{font-size:11px;padding:1px 4px;height:22px;max-width:128px}
+.row .primary{font-size:12px;padding:2px 10px;white-space:nowrap}
+.row .one{font-size:11px;padding:0 8px;height:22px;white-space:nowrap}
+.row .x{border:0;background:transparent;padding:0 7px;line-height:22px;color:var(--muted)}
+.row .x:hover{color:var(--fg);background:var(--panel-2)}
+.row.sum{background:rgba(34,37,39,.92)}
+.row.sum .nm{color:var(--fg)}
+.row.warn{border-color:var(--warn)}
+.row .wm{color:var(--warn)}
+.row.bad{border-color:var(--bad)}
+.row.bad .nm{color:var(--bad);white-space:normal}
+.mk.hot .pv{background:var(--accent);border-style:solid}
+.mk.hot .pin{outline:2px solid var(--fg);outline-offset:2px}
+.chip{display:inline-flex;align-items:center;gap:5px;max-width:100%;background:rgba(34,37,39,.9);border:1px solid var(--accent);border-radius:11px;padding:1px 3px 1px 7px;font-size:11px;line-height:18px;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,.4)}
+.chip b{font-family:var(--mono);font-weight:500;color:var(--accent)}
+.chip .nm{color:var(--muted);overflow:hidden;text-overflow:ellipsis}
+.chip.warn{border-color:var(--warn)} .chip.warn b{color:var(--warn)}
+.chip.bad{border-color:var(--bad);color:var(--bad);white-space:normal}
+.chip button{border:0;background:transparent;padding:0 4px;font-size:11px;line-height:18px;border-radius:9px;color:var(--muted)}
+.chip button:hover{background:var(--panel-2);color:var(--fg)}
+.mk.cp{transform:translate(16px,-50%);cursor:default}
+.hint{font-size:11px;color:var(--muted)}
+.hint b{color:var(--fg);font-weight:500}
+.ebox{font-size:12px;color:var(--bad)}
+.acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;align-items:center}
+
+/* drawer */
+.drawer{position:absolute;right:0;top:0;bottom:0;width:min(310px,100%);background:var(--panel);border-left:1px solid var(--line);z-index:6;padding:12px;display:flex;flex-direction:column;gap:10px;overflow:auto}
+.drawer label{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--muted)}
+.drawer label>*{font-size:13px;color:var(--fg)}
+.drawer .hd{display:flex;justify-content:space-between;align-items:center;font-weight:600}
+.toast{position:absolute;left:50%;bottom:48px;transform:translateX(-50%);background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;display:flex;gap:8px;align-items:center;z-index:7;white-space:nowrap;max-width:calc(100% - 20px);overflow:auto}
+.toast .okd{color:var(--ok)}
+
+/* test data */
+.tests{--bg:#1a1a1a;--panel-2:#383838;--line:#474747;background:#2c2c2c;border:1px solid var(--line);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:10px;min-height:0;overflow:auto}
+.tests>*{flex:none}
+.tests h2{font-size:13px;font-weight:600;margin:0;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.tc{border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:5px}
+.tc .t{font-weight:500;font-size:13px}
+.tc pre{margin:0;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:12px/1.45 var(--mono);white-space:pre-wrap;word-break:break-word;user-select:all;max-height:132px;overflow:auto}
+.tc .x{font-size:11px;color:var(--muted)}
+.tc .x b{color:var(--ok);font-weight:500}
+.tc .b{display:flex;gap:6px}
+.tc .b button{font-size:12px;padding:3px 8px}
+.foot{color:var(--muted);font-size:11px;margin:12px 0 0}
+@media (max-width:960px){html,body{height:auto}body{display:block}.app{grid-template-columns:minmax(0,1fr);grid-template-rows:none;min-height:0}.map{height:clamp(480px,70vh,640px)}.tests{overflow:visible}}
+</style>
+
+<h1>Зручне введення POI через поле пошуку</h1>
+<p class="sub">Карта умовна (сітка координат). Справа — тестові дані: скопіюйте й вставте в рядок пошуку або натисніть «У пошук».</p>
+
+<div class="app">
+  <div class="map" id="map">
+    <canvas id="cv"></canvas>
+    <div id="markers"></div>
+    <div class="tools">
+      <button id="t-poi" hidden title="Клік по карті ставить POI одразу, без діалогу">Поставити POI</button>
+    </div>
+    <div class="search" id="search">
+      <div class="sbox">
+        <button id="t-search" class="slabel" aria-describedby="balloon">Пошук</button>
+        <textarea id="q" rows="1" wrap="off" aria-label="Пошук за топонімами або координатами"></textarea>
+        <button class="ghost" id="q-clear" hidden title="Очистити й прибрати мітки">✕</button>
+      </div>
+      <div class="balloon" id="balloon" role="tooltip" hidden><p>Пошук за топонімами або координатами - "пробіл" на клавіатурі.<br>Можна вставляти і зберігати координати точок інтересу:</p><ul><li>Десяткові градуси, наприклад: 50.4501, 30.5234</li><li>Градуси, мінути, секунди, наприклад: 50°27'00.4"N 30°31'24.2"E</li><li>MGRS, наприклад: 36UUA2430091000</li><li>УСК-2000, наприклад: 55-22968, 74-25586</li></ul><p>Можна вставляти довгий текст з кількома точками.</p><p>Enter - шукати на карті, Ctrl + Enter - зберегти координати як POI.</p></div>
+      <div class="drop" id="drop" hidden></div>
+    </div>
+    <div class="zoom"><button id="z-in" aria-label="Наблизити">+</button><button id="z-out" aria-label="Віддалити">−</button></div>
+    <div class="readout mono" id="readout"></div>
+    <div class="toast" id="toast" hidden></div>
+    <div class="drawer" id="drawer" hidden></div>
+  </div>
+
+  <aside class="tests" id="tests"><h2>Тестові дані</h2></aside>
+</div>
+<p class="foot">Прототип до пропозиції щодо Пошуку й POI. Поточну поведінку звірено з buntar-copilot-ui develop 51007421b і buntar-copilot-api develop 6a1d342b. УСК-2000 тут лише розпізнається, без перерахунку; зона ППО — умовне коло без урахування рельєфу.</p>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.0/proj4.js"></script>
+<script id="parser">
+// ---------- strict coordinate recognition (pure functions) ----------
+const WORK = { lat: 50.45, lon: 30.52 }, FAR_KM = 300;
+const MINM = "['′’]", SECM = "(?:\"|″|”|'')", HEM = "(?:\\s*([NSEW])(?![A-Za-z]))?", SEPR = "[\\s,;]*";
+const DMS1 = "(\\d{1,3})\\s*°\\s*(\\d{1,2})\\s*" + MINM + "\\s*(\\d{1,2}(?:[.,]\\d+)?)\\s*" + SECM + HEM;
+const DM1 = "(\\d{1,3})\\s*°\\s*(\\d{1,2}(?:[.,]\\d+)?)\\s*" + MINM + HEM;
+const RE = {
+  dms: new RegExp(DMS1 + SEPR + DMS1),
+  dm: new RegExp(DM1 + SEPR + DM1),
+  mgrs: /(?<![A-Za-z0-9])(\d{1,2})\s?([C-HJ-NP-X])\s?([A-HJ-NP-Z]{2})\s?(\d(?:\s?\d){1,11})(?!\d)/i,
+  usk: /(?<![\d-])(\d{1,2})-(\d{4,6})\s*,\s*(\d{1,2})-(\d{4,6})(?!\d)/,
+  dec: /(?<![\d.,])(-?\d{1,3}\.\d+)\s*[,;\s]\s*(-?\d{1,3}\.\d+)(?![\d.])/,
+  decComma: /(?<![\d.,])(-?\d{1,3},\d{3,})\s*(?:[;\s]|,\s)\s*(-?\d{1,3},\d{3,})(?!\d)/,
+};
+const num = (s) => parseFloat(String(s).replace(',', '.'));
+function byHem(a, ha, b, hb) {
+  if (ha && hb && 'EW'.includes(ha) && 'NS'.includes(hb)) { [a, b] = [b, a]; [ha, hb] = [hb, ha]; }
+  return { lat: ha === 'S' ? -a : a, lon: hb === 'W' ? -b : b };
+}
+const MATCHERS = [
+  (s) => { const m = RE.dms.exec(s); if (!m) return null;
+    const a = +m[1] + +m[2] / 60 + num(m[3]) / 3600, b = +m[5] + +m[6] / 60 + num(m[7]) / 3600;
+    return { m, res: { ...byHem(a, m[4], b, m[8]), fmt: 'градуси, мінути, секунди' } }; },
+  (s) => { const m = RE.dm.exec(s); if (!m) return null;
+    const a = +m[1] + num(m[2]) / 60, b = +m[4] + num(m[5]) / 60;
+    return { m, res: { ...byHem(a, m[3], b, m[6]), fmt: 'градуси й десяткові мінути' } }; },
+  (s) => { const m = RE.mgrs.exec(s); if (!m) return null;
+    const d = m[4].replace(/\s/g, '');
+    if (d.length !== 10) return { m, res: { error: 'MGRS: потрібно 10 цифр (точність 1 м), тут ' + d.length } };
+    try {
+      const p = proj4.mgrs.toPoint((m[1] + m[2] + m[3] + d).toUpperCase());
+      return { m, res: { lat: p[1], lon: p[0], fmt: 'MGRS' } };
+    } catch (e) { return { m, res: { error: 'MGRS: такого квадрата не існує' } }; } },
+  (s) => { const m = RE.usk.exec(s); if (!m) return null;
+    return { m, res: { error: 'Розпізнано як УСК-2000.' } }; },
+  (s) => { const m = RE.dec.exec(s); if (!m) return null;
+    return { m, res: { lat: num(m[1]), lon: num(m[2]), fmt: 'десяткові градуси' } }; },
+  (s) => { const m = RE.decComma.exec(s); if (!m) return null;
+    return { m, res: { lat: num(m[1]), lon: num(m[2]), fmt: 'десяткові градуси, кома' } }; },
+];
+const cleanLabel = (s) => s.replace(/^[\s:;,.\-–—]+|[\s:;,.\-–—]+$/g, '');
+function distKm(a, b) {
+  const r = Math.PI / 180, dl = (b.lat - a.lat) * r, dn = (b.lon - a.lon) * r;
+  const h = Math.sin(dl / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dn / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(h));
+}
+function check(it) {
+  it.warn = ''; it.canSwap = false;
+  const d = distKm(WORK, it);
+  if (d > FAR_KM) {
+    it.warn = 'За ' + Math.round(d) + ' км від району роботи.';
+    if (Math.abs(it.lon) <= 90 && distKm(WORK, { lat: it.lon, lon: it.lat }) <= FAR_KM) {
+      it.warn += ' Схоже, широту й довготу переплутано.'; it.canSwap = true;
+    }
+  }
+  return it;
+}
+function extract(line) {
+  let rest = line.replace(/^\s*\d{1,3}[.)]\s+/, '');
+  const items = [], errs = [];
+  for (;;) {
+    let best = null;
+    for (const fn of MATCHERS) { const r = fn(rest); if (r && (!best || r.m.index < best.m.index)) best = r; }
+    if (!best) break;
+    const before = rest.slice(0, best.m.index);
+    rest = rest.slice(best.m.index + best.m[0].length);
+    const r = best.res;
+    if (r.error) errs.push(r.error);
+    else if (Math.abs(r.lat) > 90 || Math.abs(r.lon) > 180) errs.push('Широта має бути до 90°, довгота до 180°');
+    else { r.label = cleanLabel(before); items.push(r); }
+  }
+  const tail = cleanLabel(rest);
+  if (items.length && tail) { const l = items[items.length - 1]; l.label = l.label ? l.label + ' ' + tail : tail; }
+  return { items, errs };
+}
+function analyze(text) {
+  const items = [], bad = [];
+  text.split(/\r?\n/).forEach((line, i) => {
+    if (!line.trim()) return;
+    const ex = extract(line);
+    ex.items.forEach((it) => { it.line = i + 1; it.on = true; check(it); if (it.warn) it.on = false; items.push(it); });
+    ex.errs.forEach((e) => bad.push({ line: i + 1, text: line.trim(), reason: e }));
+    if (!ex.items.length && !ex.errs.length) bad.push({ line: i + 1, text: line.trim(),
+      reason: /\d/.test(line) ? 'Числа є, але це не координати: потрібна дробова частина або один із форматів' : 'Координати не розпізнано' });
+  });
+  return { items, bad };
+}
+if (typeof module !== 'undefined') module.exports = { analyze };
+</script>
+
+<script>
+// ---------- prototype UI ----------
+const TYPES = [['unknown','Невідомо','?'],['armored','Бронемашина','БМ'],['afv','ББМ','ББМ'],['tank','Танк','Т'],['antenna','Антена','А'],
+  ['airDefense','ППО','ППО'],['radar','РЛС','РЛС'],['howitzer','Гаубиця','Г'],['ew','РЕБ','РЕБ'],['troops','Піхота','П'],['c2','Пункт управління','ПУ']];
+const TNAME = Object.fromEntries(TYPES.map((t) => [t[0], t[1]])), TCODE = Object.fromEntries(TYPES.map((t) => [t[0], t[2]]));
+const PPO_KM = { 'С-400': 400, 'С-300ПМУ2': 250, 'БУК-М1': 85, 'БУК-М2': 120 };
+const LONG = Array.from({ length: 40 }, (_, i) => (50.30 + (i % 8) * 0.035 + (i * 7 % 5) * 0.004).toFixed(4) + ', ' + (30.15 + Math.floor(i / 8) * 0.11 + (i * 3 % 7) * 0.006).toFixed(4)).join('\n');
+const TESTS = [
+  ['Одна точка', '50.4501, 30.5234', 'Під полем один рядок, вирівняний по лінії після «Пошук»: координати, як їх прочитано, тип, <b>«Створити POI»</b> і хрестик останнім; на карті мітка. «Створити POI» ставить точку без діалогу й без назви. Enter — наблизити, Ctrl+Enter — створити, ✕ — відмовитись.'],
+  ['Текст із числом перед координатами', 'Точка 1: 50.4501, 30.5234', 'Та сама точка, що й вище; «1» не стає координатою. <b>«Точка 1»</b> видно в рядку й стане назвою POI.'],
+  ['Десяткова кома', '50,4501 30,5234', 'Розпізнано як <b>десяткові градуси, кома</b>. Точка та сама.'],
+  ['Градуси з пробілами й півкулею', '50° 27\' 00.4" N 30° 31\' 24.2" E', 'Розпізнано як <b>градуси, мінути, секунди</b>, точка поруч із попередніми.'],
+  ['MGRS, 10 цифр', '36UUA2430091000', 'Розпізнано як <b>MGRS</b>, точка в районі роботи.'],
+  ['MGRS, 8 цифр', '36UUA24309100', 'Точки немає. Червоний рядок під полем: <b>потрібно 10 цифр, тут 8</b>.'],
+  ['Переплутані широта й довгота', '30.5234, 50.4501', 'Жовтий рядок зі знаком ⚠ (наведіть — «за … км від району роботи») і кнопкою <b>⇄</b>. Після неї рядок стає звичайним.'],
+  ['Три пари в одному рядку', '50.1000, 30.1000 50.2000, 30.2000 50.3000, 30.3000', 'Підсумковий рядок і <b>три рядки точок</b>, на карті три пронумеровані мітки, а не одна хибна точка. <b>«Створити»</b> в рядку ставить лише цю точку й прибирає її рядок, решта лишається в списку. ✕ прибирає точку без створення. В обох випадках лічильник у «Створити N POI» зменшується. Наведення на рядок підсвічує мітку.'],
+  ['Список із повідомлення', '1. 50.4501, 30.5234 БМП\n2) 50.4622, 30.6011\nРЕБ 50,3980 30,4470\n50° 29\' 12.0" N 30° 21\' 45.0" E\n36UUA2430091000 антена\nтут немає координат\n30.7000, 50.5000', 'Підсумковий рядок <b>«Знайдено точок: 6 · не розпізнано рядків: 1»</b>, під ним шість рядків точок і один червоний: <b>«Ряд 6 - координати не розпізнано»</b>. Назви «БМП», «РЕБ», «антена» взято з тексту; нумерація «1.», «2)» ігнорується. Кожній точці можна вибрати свій тип; тип у підсумковому рядку міняє всі одразу. У кожному рядку точки перед хрестиком є <b>«Створити»</b>: ставить POI і прибирає цей рядок; у червоному рядку такої кнопки немає. Шостий рядок жовтий: ⇄ виправляє його, ✕ прибирає, і кнопка стає <b>«Створити 5 POI»</b>. Після створення «Скасувати» прибирає всю пачку.'],
+  ['Довгий список — 40 точок', LONG, 'Сорок рядків не вміщаються над картою, тому список <b>згорнуто</b>: лишається один рядок «Знайдено точок: 40» з типом, кнопкою «Створити 40 POI» і хрестиком, а біля кожної мітки на карті стоїть табличка з хрестиком. Якщо прибирати точки хрестиками, список <b>розгорнеться в рядки</b>, щойно вони вмістяться.'],
+  ['УСК-2000', '55-22968, 74-25586', 'Червоний рядок називає формат. Перерахунку в прототипі немає (у продукті він уже працює).'],
+  ['Не координати', 'привіт, 50 30', 'Точки немає. Червоний рядок пояснює, <b>чому</b> не розпізнано.'],
+];
+const S = { view: { lat: WORK.lat, lon: WORK.lon, k: 900 }, pois: [], an: null, pin: null, sel: null, tool: false, lastType: 'unknown', uid: 1 };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const fmtLL = (p) => p.lat.toFixed(7) + ', ' + p.lon.toFixed(7);
+const COSF = Math.cos(50 * Math.PI / 180);
+const mapEl = $('map'), cv = $('cv'), ctx = cv.getContext('2d');
+const size = () => ({ W: mapEl.clientWidth, H: mapEl.clientHeight });
+function toPx(p) { const { W, H } = size(), v = S.view; return { x: W / 2 + (p.lon - v.lon) * v.k, y: H / 2 - (p.lat - v.lat) * v.k / COSF }; }
+function toLL(x, y) { const { W, H } = size(), v = S.view; return { lon: v.lon + (x - W / 2) / v.k, lat: v.lat - (y - H / 2) * COSF / v.k }; }
+function topPad() { return S.an ? Math.max(0, $('search').getBoundingClientRect().bottom - mapEl.getBoundingClientRect().top) : 0; }
+function fit(pts) {
+  if (!pts.length) return;
+  const { W, H } = size(); let pad = topPad(); if (H - pad < 200) pad = 0;
+  const la = pts.map((p) => p.lat), lo = pts.map((p) => p.lon);
+  const dLa = Math.max(...la) - Math.min(...la) || 0.01, dLo = Math.max(...lo) - Math.min(...lo) || 0.01;
+  if (pts.length === 1) { if (S.view.k < 600) S.view.k = 1500; }
+  else S.view.k = Math.max(3, Math.min(20000, Math.min(W * 0.6 / dLo, (H - pad - 80) * 0.8 * COSF / dLa)));
+  S.view.lon = (Math.max(...lo) + Math.min(...lo)) / 2;
+  S.view.lat = (Math.max(...la) + Math.min(...la)) / 2 + (pad / 2) * COSF / S.view.k;
+}
+// suspicious (far-away) points do not drive the zoom, otherwise one swapped pair shrinks the rest into a dot
+function fitAn() { const ok = S.an.items.filter((i) => !i.warn); fit(ok.length ? ok : S.an.items); }
+const TYPES_AZ = TYPES.slice().sort((a, b) => a[1].localeCompare(b[1], 'uk'));
+function typeOptions(sel) { return TYPES_AZ.map((t) => '<option value="' + t[0] + '"' + (t[0] === sel ? ' selected' : '') + '>' + t[1] + '</option>').join(''); }
+
+function drawMap() {
+  const { W, H } = size(), dpr = window.devicePixelRatio || 1, v = S.view;
+  cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = getComputedStyle(document.documentElement);
+  ctx.fillStyle = css.getPropertyValue('--map'); ctx.fillRect(0, 0, W, H);
+  const step = [20, 10, 5, 2, 1, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005].filter((s) => s * v.k >= 90).pop() || 20;
+  const a = toLL(0, H), b = toLL(W, 0), dec = step < 0.01 ? 3 : step < 0.1 ? 2 : step < 1 ? 1 : 0;
+  ctx.strokeStyle = css.getPropertyValue('--grid'); ctx.fillStyle = css.getPropertyValue('--muted'); ctx.lineWidth = 1; ctx.font = '10px IBM Plex Mono, monospace';
+  for (let lo = Math.floor(a.lon / step) * step; lo <= b.lon; lo += step) { const x = toPx({ lat: 0, lon: lo }).x; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); ctx.fillText(lo.toFixed(dec) + '°', x + 3, H - 30); }
+  for (let la = Math.floor(a.lat / step) * step; la <= b.lat; la += step) { const y = toPx({ lat: la, lon: 0 }).y; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); ctx.fillText(la.toFixed(dec) + '°', 52, y - 3); }
+  for (const p of S.pois) {
+    const km = p.type === 'airDefense' ? PPO_KM[p.name] : 0; if (!km) continue;
+    const c = toPx(p), r = km / 111.32 * v.k / COSF;
+    ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, 7); ctx.fillStyle = 'rgba(255,64,96,.10)'; ctx.fill();
+    ctx.strokeStyle = css.getPropertyValue('--hostile'); ctx.setLineDash([6, 5]); ctx.stroke(); ctx.setLineDash([]);
+  }
+  $('readout').textContent = 'центр ' + v.lat.toFixed(4) + ', ' + v.lon.toFixed(4) + ' · 1 px ≈ ' + Math.round(111320 * COSF / v.k) + ' м';
+}
+function drawMarkers() {
+  const box = $('markers'); box.innerHTML = '';
+  const add = (p, cls, html, title, on) => { const q = toPx(p), el = document.createElement('div'); el.className = 'mk ' + cls; el.style.left = q.x + 'px'; el.style.top = q.y + 'px'; el.innerHTML = html; el.title = title; el.onclick = on; box.appendChild(el); };
+  S.pois.forEach((p) => add(p, 'poi' + (S.sel === p.id ? ' sel' : ''), '<span class="poi-ico">' + TCODE[p.type] + '</span>' + (p.name ? '<span class="poi-name">' + esc(p.name.slice(0, 20)) + '</span>' : ''),
+    (p.name || TNAME[p.type]) + ' · ' + fmtLL(p), (e) => { e.stopPropagation(); openDrawer(p.id); }));
+  if (S.an) S.an.items.forEach((it, i) => {
+    const many = S.an.items.length > 1;
+    add(it, '', many ? '<div class="pv' + (it.warn ? ' warn' : '') + '">' + (i + 1) + '</div>' : '<div class="pin"></div>', fmtLL(it) + ' · ' + it.fmt, null);
+    box.lastChild.dataset.pv = i;
+    if (!S.collapsed) return;
+    add(it, 'cp', '<span class="chip' + (it.warn ? ' warn' : '') + '">' + (many ? '<b>' + (i + 1) + '</b>' : '') + '<span class="mono">' + it.lat.toFixed(5) + ', ' + it.lon.toFixed(5) + '</span>' +
+      (it.label ? '<span class="nm">' + esc(it.label.slice(0, 18)) + '</span>' : '') + (it.warn ? '<span>⚠</span>' : '') +
+      (it.canSwap ? '<button data-a="swap" title="Поміняти широту й довготу місцями">⇄</button>' : '') + '<button data-a="x" title="Прибрати цю точку" aria-label="Прибрати точку">✕</button></span>',
+      (it.warn ? it.warn + ' ' : '') + 'Прочитано як: ' + it.fmt, null);
+    const el = box.lastChild;
+    el.querySelector('[data-a=x]').onclick = (e) => { e.stopPropagation(); S.an.items.splice(i, 1); afterEdit(); };
+    const sw = el.querySelector('[data-a=swap]');
+    if (sw) sw.onclick = (e) => { e.stopPropagation(); [it.lat, it.lon] = [it.lon, it.lat]; check(it); fitAn(); afterEdit(); };
+  });
+}
+function redraw() { drawMap(); drawMarkers(); }
+
+// ----- search -----
+function onQuery(refit) {
+  const text = $('q').value; S.an = text.trim() ? analyze(text) : null;
+  renderRes();
+  if (S.an && refit && S.an.items.length) fitAn();
+  redraw();
+}
+function afterEdit() { if (!S.an.items.length && !S.an.bad.length) { clearSearch(); return; } renderRes(); redraw(); }
+function hot(i, on) { const el = $('markers').querySelector('[data-pv="' + i + '"]'); if (el) el.classList.toggle('hot', on); }
+function buildDrop(collapsed) {
+  const an = S.an, drop = $('drop'), n = an.items.length; drop.innerHTML = '';
+  const row = (cls, html) => { const el = document.createElement('div'); el.className = 'row ' + cls; el.innerHTML = html; drop.appendChild(el); return el; };
+  const X = (t) => '<button class="x" data-a="x" title="' + t + '" aria-label="' + t + '">✕</button>';
+  const create = '<button class="primary" data-a="create">' + (n === 1 ? 'Створити POI' : 'Створити ' + n + ' POI') + '</button>';
+  if (n > 1) {
+    const el = row('sum', '<span class="nm">Знайдено точок: ' + n + (an.bad.length ? ' · <span class="ebox">не розпізнано рядків: ' + an.bad.length + '</span>' : '') + '</span>' +
+      '<select data-a="type" aria-label="Тип для всіх точок" title="Тип для всіх точок">' + typeOptions(S.lastType) + '</select>' + create + X('Очистити все'));
+    el.querySelector('[data-a=create]').onclick = () => createFrom(picked());
+    el.querySelector('[data-a=type]').onchange = (e) => { S.lastType = e.target.value; an.items.forEach((it) => { it.type = S.lastType; }); renderRes(); };
+    el.querySelector('[data-a=x]').onclick = clearSearch;
+  }
+  if (!collapsed) an.items.forEach((it, i) => {
+    const el = row(it.warn ? 'warn' : '', (n > 1 ? '<b>' + (i + 1) + '</b>' : '') + '<span class="mono">' + it.lat.toFixed(5) + ', ' + it.lon.toFixed(5) + '</span>' +
+      '<span class="nm">' + (it.label ? '<i>' + esc(it.label) + '</i> · ' : '') + it.fmt + '</span>' + (it.warn ? '<span class="wm">⚠</span>' : '') +
+      (it.canSwap ? '<button class="x" data-a="swap" title="Поміняти широту й довготу місцями">⇄</button>' : '') +
+      '<select data-a="type" aria-label="Тип POI" title="Тип POI">' + typeOptions(it.type || S.lastType) + '</select>' +
+      (n === 1 ? create : '<button class="one" data-a="one" title="Створити POI з цієї точки й прибрати рядок">Створити</button>') + X('Прибрати цю точку'));
+    el.title = (it.warn ? it.warn + ' ' : '') + 'Прочитано як: ' + it.fmt;
+    el.querySelector('[data-a=x]').onclick = () => { an.items.splice(i, 1); afterEdit(); };
+    el.querySelector('[data-a=type]').onchange = (e) => { it.type = e.target.value; if (n === 1) S.lastType = it.type; };
+    const sw = el.querySelector('[data-a=swap]');
+    if (sw) sw.onclick = () => { [it.lat, it.lon] = [it.lon, it.lat]; check(it); renderRes(); fitAn(); redraw(); };
+    if (n === 1) el.querySelector('[data-a=create]').onclick = () => createFrom(picked());
+    else el.querySelector('[data-a=one]').onclick = () => createOne(i);
+    el.onmouseenter = () => hot(i, true); el.onmouseleave = () => hot(i, false);
+  });
+  an.bad.forEach((b, i) => {
+    // "Ряд 6 - координати не розпізнано": the reason starts lower-case after the hyphen, acronyms (MGRS) stay as they are
+    const why = /^[А-ЯІЇЄҐ][а-яіїєґ]/.test(b.reason) ? b.reason[0].toLowerCase() + b.reason.slice(1) : b.reason;
+    const el = row('bad', '<span class="nm">Ряд ' + b.line + ' - ' + esc(why) + '</span>' + X('Прибрати рядок'));
+    el.title = b.text;
+    el.querySelector('[data-a=x]').onclick = () => { an.bad.splice(i, 1); afterEdit(); };
+  });
+}
+function renderRes() {
+  const an = S.an, drop = $('drop'), sr = $('search');
+  sr.style.setProperty('--lw', $('t-search').offsetWidth + 'px');
+  $('q-clear').hidden = !$('q').value;
+  sr.classList.toggle('err', !!an && !an.items.length);
+  drop.hidden = !an; drop.style.maxHeight = ''; S.collapsed = false;
+  if (!an) { drop.innerHTML = ''; return; }
+  buildDrop(false);
+  // rows are listed one per point while they fit above the map's bottom controls; otherwise collapse to the summary row + chips on the map
+  const avail = mapEl.getBoundingClientRect().bottom - 56 - drop.getBoundingClientRect().top;
+  if (an.items.length > 1 && drop.scrollHeight > avail) { S.collapsed = true; buildDrop(true); }
+  drop.style.maxHeight = Math.max(60, avail) + 'px';
+}
+function picked() { return S.an.items.slice(); }
+function clearSearch() { $('q').value = ''; onQuery(false); }
+function createFrom(items) {
+  if (!items.length) return;
+  const made = items.map((it) => ({ id: S.uid++, lat: it.lat, lon: it.lon, name: (it.label || '').trim(), type: it.type || S.lastType, desc: '' }));
+  S.pois.push(...made); $('q').value = ''; onQuery(false);
+  const ids = made.map((p) => p.id);
+  toast('<span class="okd">' + (made.length === 1 ? 'POI створено' : 'Створено ' + made.length + ' POI') + '</span>' + (made.length === 1 ? '<button id="to-edit">Змінити</button>' : '') + '<button id="to-undo">Скасувати</button>');
+  if ($('to-edit')) $('to-edit').onclick = () => { hideToast(); openDrawer(ids[0]); };
+  $('to-undo').onclick = () => { S.pois = S.pois.filter((p) => !ids.includes(p.id)); if (ids.includes(S.sel)) closeDrawer(); hideToast(); redraw(); };
+}
+// one point out of a list: the POI is created and its row leaves the list, the other rows stay
+function createOne(i) {
+  const an = S.an, it = an.items[i];
+  const p = { id: S.uid++, lat: it.lat, lon: it.lon, name: (it.label || '').trim(), type: it.type || S.lastType, desc: '' };
+  S.pois.push(p); an.items.splice(i, 1); afterEdit();
+  toast('<span class="okd">POI створено</span><button id="to-edit">Змінити</button><button id="to-undo">Скасувати</button>');
+  $('to-edit').onclick = () => { hideToast(); openDrawer(p.id); };
+  $('to-undo').onclick = () => {
+    S.pois = S.pois.filter((q) => q.id !== p.id); if (S.sel === p.id) closeDrawer(); hideToast();
+    if (S.an === an) { an.items.splice(Math.min(i, an.items.length), 0, it); renderRes(); }
+    redraw();
+  };
+}
+let toastT;
+function toast(html) { const t = $('toast'); t.innerHTML = html; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(hideToast, 9000); }
+function hideToast() { $('toast').hidden = true; }
+function copyText(text, btn) {
+  const done = () => { const o = btn.textContent; btn.textContent = 'Скопійовано'; setTimeout(() => { btn.textContent = o; }, 1200); };
+  try { navigator.clipboard.writeText(text).then(done, () => { btn.textContent = 'Виділіть текст вручну'; }); } catch (e) { btn.textContent = 'Виділіть текст вручну'; }
+}
+
+// ----- POI drawer -----
+function openDrawer(id) { S.sel = id; renderDrawer(); redraw(); }
+function closeDrawer() { S.sel = null; $('drawer').hidden = true; redraw(); }
+function renderDrawer() {
+  const p = S.pois.find((x) => x.id === S.sel), d = $('drawer'); if (!p) { d.hidden = true; return; }
+  d.hidden = false;
+  const ppo = p.type === 'airDefense';
+  d.innerHTML = '<div class="hd"><span>' + esc(p.name || TNAME[p.type]) + '</span><button class="ghost" id="d-x" aria-label="Закрити">✕</button></div>' +
+    '<label>Тип<select id="d-type">' + typeOptions(p.type) + '</select></label>' +
+    '<label>' + (ppo ? 'Модель комплексу' : 'Назва — необов’язково') + '<input type="text" id="d-name" list="' + (ppo ? 'ppo-list' : '') + '" value="' + esc(p.name) + '" maxlength="100" placeholder="' + (ppo ? 'виберіть зі списку' : 'без назви') + '"></label>' +
+    '<datalist id="ppo-list">' + Object.keys(PPO_KM).map((k) => '<option value="' + k + '">').join('') + '</datalist>' +
+    (ppo ? '<div class="hint" id="d-ppo">' + (PPO_KM[p.name] ? 'Зона ураження показана на карті (умовне коло ' + PPO_KM[p.name] + ' км).' : 'Вкажіть модель, щоб побачити зону ураження. Без моделі POI зберігається, зона не рахується, помилки немає.') + '</div>' : '') +
+    '<label>Координати<input type="text" id="d-coords" class="mono" value="' + fmtLL(p) + '"></label><div class="hint" id="d-chint">Приймає ті самі формати, що й пошук.</div>' +
+    '<label>Коментар<textarea id="d-desc" rows="3" maxlength="500">' + esc(p.desc) + '</textarea></label>' +
+    '<div class="acts"><button class="primary" id="d-save">Зберегти</button><button id="d-del">Видалити</button></div>';
+  $('d-x').onclick = closeDrawer;
+  $('d-type').onchange = (e) => { p.type = e.target.value; p.name = $('d-name').value.trim(); renderDrawer(); redraw(); };
+  $('d-name').oninput = (e) => { p.name = e.target.value.trim(); if (p.type === 'airDefense') { $('d-ppo').textContent = PPO_KM[p.name] ? 'Зона ураження показана на карті (умовне коло ' + PPO_KM[p.name] + ' км).' : 'Вкажіть модель, щоб побачити зону ураження. Без моделі POI зберігається, зона не рахується, помилки немає.'; } redraw(); };
+  const hint = () => { const a = analyze($('d-coords').value), h = $('d-chint'); if (a.items.length === 1 && !a.bad.length) { h.style.color = ''; h.textContent = 'Прочитано як: ' + a.items[0].fmt + ' → ' + fmtLL(a.items[0]) + (a.items[0].warn ? ' · ' + a.items[0].warn : ''); return a.items[0]; } h.style.color = 'var(--bad)'; h.textContent = a.bad[0] ? a.bad[0].reason : a.items.length > 1 ? 'Тут має бути одна точка' : 'Вкажіть координати'; return null; };
+  $('d-coords').oninput = hint;
+  $('d-save').onclick = () => { const it = hint(); if (!it) return; p.lat = it.lat; p.lon = it.lon; p.name = $('d-name').value.trim(); p.desc = $('d-desc').value; closeDrawer(); toast('<span class="okd">Збережено</span>'); };
+  $('d-del').onclick = () => { S.pois = S.pois.filter((x) => x.id !== p.id); closeDrawer(); };
+}
+
+// ----- map interaction -----
+let drag = null;
+mapEl.addEventListener('pointerdown', (e) => { if (e.target !== cv && e.target.id !== 'markers') return; drag = { x: e.clientX, y: e.clientY, moved: false }; mapEl.setPointerCapture(e.pointerId); });
+mapEl.addEventListener('pointermove', (e) => { if (!drag) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (!drag.moved && Math.hypot(dx, dy) < 4) return; drag.moved = true; S.view.lon -= dx / S.view.k; S.view.lat += dy * COSF / S.view.k; drag.x = e.clientX; drag.y = e.clientY; redraw(); });
+mapEl.addEventListener('pointerup', (e) => {
+  if (!drag) return; const moved = drag.moved; drag = null;
+  if (moved || !S.tool) return;
+  const b = mapEl.getBoundingClientRect(), ll = toLL(e.clientX - b.left, e.clientY - b.top);
+  const p = { id: S.uid++, lat: ll.lat, lon: ll.lon, name: '', type: S.lastType, desc: '' }; S.pois.push(p); redraw();
+  toast('<span class="okd">POI створено</span><button id="to-edit">Змінити</button><button id="to-undo">Скасувати</button>');
+  $('to-edit').onclick = () => { hideToast(); openDrawer(p.id); };
+  $('to-undo').onclick = () => { S.pois = S.pois.filter((x) => x.id !== p.id); hideToast(); redraw(); };
+});
+mapEl.addEventListener('wheel', (e) => { if (e.target.closest('.search,.drawer')) return; e.preventDefault(); zoom(e.deltaY < 0 ? 1.25 : 0.8); }, { passive: false });
+function zoom(f) { S.view.k = Math.max(3, Math.min(20000, S.view.k * f)); redraw(); }
+$('z-in').onclick = () => zoom(1.5); $('z-out').onclick = () => zoom(1 / 1.5);
+$('t-poi').onclick = () => { S.tool = !S.tool; $('t-poi').classList.toggle('on', S.tool); mapEl.classList.toggle('tool', S.tool); };
+$('t-search').onclick = () => $('q').focus();
+$('q-clear').onclick = clearSearch;
+$('q').addEventListener('input', () => onQuery(true));
+$('q').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || e.shiftKey) return;
+  e.preventDefault(); if (!S.an || !S.an.items.length) return;
+  if (e.ctrlKey || e.metaKey) createFrom(picked()); else { if (S.an.items.length === 1) S.view.k = Math.max(S.view.k, 3000); fitAn(); redraw(); }
+});
+document.addEventListener('keydown', (e) => { if (e.code === 'Space' && !/INPUT|TEXTAREA|SELECT|BUTTON/.test(document.activeElement.tagName)) { e.preventDefault(); $('q').focus(); } });
+
+// ----- test data column -----
+TESTS.forEach((t, i) => {
+  const el = document.createElement('div'); el.className = 'tc';
+  el.innerHTML = '<div class="t">' + t[0] + '</div><pre id="tp' + i + '"></pre><div class="b"><button id="tcopy' + i + '">Копіювати</button><button id="tput' + i + '">У пошук</button></div><div class="x">Очікувано: ' + t[2] + '</div>';
+  $('tests').appendChild(el); $('tp' + i).textContent = t[1];
+  $('tcopy' + i).onclick = () => copyText(t[1], $('tcopy' + i));
+  $('tput' + i).onclick = () => { $('q').value = t[1]; onQuery(true); $('q').focus(); mapEl.scrollIntoView({ block: 'nearest' }); };
+});
+const extra = document.createElement('div'); extra.className = 'tc';
+extra.innerHTML = '<div class="t">Після створення POI</div><div class="x">Клік по POI відкриває панель. Очікувано: <b>назву можна лишити порожньою</b> — на карті тоді лише значок, у заголовку панелі тип. Тип «ППО» без моделі: <b>підказка замість помилки</b>; модель «БУК-М1» зі списку — на карті з’являється коло. Поле координат приймає ті самі формати й показує, як їх прочитано.</div>';
+$('tests').appendChild(extra);
+const extra2 = document.createElement('div'); extra2.className = 'tc';
+extra2.innerHTML = '<div class="t">Поле пошуку</div><div class="x">Очікувано: підказка спливає лише при наведенні на <b>«Пошук»</b> зліва; над полем вводу нічого не спливає. Порожнє поле — просто порожній рядок, без тексту за замовчуванням. Хрестик у полі з’являється, лише коли в ньому є текст.</div>';
+$('tests').appendChild(extra2);
+
+window.addEventListener('resize', () => { renderRes(); redraw(); });
+const lab = $('t-search'), bal = $('balloon');
+lab.addEventListener('mouseenter', () => { bal.hidden = false; });
+lab.addEventListener('mouseleave', () => { bal.hidden = true; });
+lab.addEventListener('focus', () => { if (lab.matches(':focus-visible')) bal.hidden = false; });
+lab.addEventListener('blur', () => { bal.hidden = true; });
+onQuery(false);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { renderRes(); redraw(); });
+</script>
